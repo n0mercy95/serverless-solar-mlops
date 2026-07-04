@@ -1,0 +1,40 @@
+# ============================================================
+# requirements-train.txt — Dependencias Ancladas
+# Serverless Solar MLOps | Sub-fase 0.1
+# ============================================================
+# Todas las versiones están fijadas (pinned) para garantizar
+# reproducibilidad bit-a-bit entre desarrollo local y Vertex AI.
+# ============================================================
+
+# --------------- Deep Learning Framework ---------------
+torch==2.3.1
+torchvision==0.18.1
+
+# --------------- Datos y Manipulación ---------------
+pandas==2.2.2
+numpy==1.26.4
+pyarrow==16.1.0
+
+# --------------- Google Cloud SDKs ---------------
+google-cloud-bigquery==3.25.0
+google-cloud-storage==2.18.2
+google-cloud-aiplatform==1.60.0
+google-cloud-logging==3.11.2
+google-cloud-pubsub==2.23.1
+
+# --------------- Validación de Configuración ---------------
+pydantic==2.8.2
+pydantic-settings==2.4.0
+python-dotenv==1.0.1
+
+# --------------- Logging Estructurado ---------------
+structlog==24.4.0
+
+# --------------- Testing ---------------
+pytest==8.2.2
+pytest-cov==5.0.0
+pytest-mock==3.14.0
+
+# --------------- Utilidades ---------------
+tqdm==4.66.5
+scikit-learn==1.5.1

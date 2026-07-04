@@ -1,0 +1,90 @@
+# ============================================================
+# .gitignore — Serverless Solar MLOps
+# Sub-fase 0.1: Protección estricta de datos, secretos y artefactos
+# ============================================================
+
+# --------------- Entorno virtual de Python ---------------
+venv/
+.venv/
+env/
+.env/
+
+# --------------- Secretos y variables de entorno ---------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# --------------- Python cache & bytecode ---------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# --------------- Datos y artefactos de modelos ---------------
+# Nunca versionar datasets, pesos o checkpoints
+data/
+*.csv
+*.parquet
+*.hdf5
+*.h5
+*.pt
+*.pth
+*.onnx
+*.pkl
+*.joblib
+*.npy
+*.npz
+model_artifacts/
+checkpoints/
+
+# --------------- Jupyter Notebooks (outputs) ---------------
+.ipynb_checkpoints/
+*.ipynb
+
+# --------------- Docker ---------------
+*.tar
+docker-compose.override.yml
+
+# --------------- IDE y editores ---------------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# --------------- Logs ---------------
+logs/
+*.log
+
+# --------------- Google Cloud / Vertex AI ---------------
+# Credenciales de servicio (CRÍTICO: nunca versionar)
+*-service-account.json
+*-sa-key.json
+gcloud-credentials.json
+application_default_credentials.json
+
+# --------------- Terraform / IaC (si aplica) ---------------
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfvars
+
+# --------------- Coverage & Testing ---------------
+.coverage
+htmlcov/
+.pytest_cache/
+.tox/
+.nox/
+
+# --------------- Misc ---------------
+*.bak
+*.tmp
