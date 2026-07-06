@@ -88,3 +88,12 @@ htmlcov/
 # --------------- Misc ---------------
 *.bak
 *.tmp
+
+# --------------- Docker Local Volumes (Sub-fase 0.2) ---------------
+# Excluir contenido de volúmenes locales (emulación de Vertex AI)
+# pero mantener la estructura de directorios con .gitkeep
+local_volumes/model-output/*
+local_volumes/checkpoints/*
+local_volumes/tensorboard-logs/*
+local_volumes/data/*
+!local_volumes/**/.gitkeep

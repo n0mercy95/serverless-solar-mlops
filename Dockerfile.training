@@ -1,0 +1,83 @@
+# ============================================================
+# Dockerfile.training — Imagen Multi-Stage para Vertex AI
+# Serverless Solar MLOps | Sub-fase 0.2
+# ============================================================
+# Estrategia multi-stage para reducir superficie de ataque:
+#   Stage 1 (builder): Instala dependencias con compiladores
+#   Stage 2 (runtime): Copia solo los artefactos necesarios
+# ============================================================
+
+# --------------- Stage 1: Builder ---------------
+FROM python:3.11-slim AS builder
+
+# Evitar prompts interactivos y configurar locale
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+# Instalar dependencias de compilación (temporales, no pasan al runtime)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        build-essential \
+        gcc \
+        g++ \
+    && rm -rf /var/lib/apt/lists/*
+
+# Crear directorio de trabajo
+WORKDIR /build
+
+# Copiar SOLO requirements primero (cache de capas Docker)
+COPY requirements-train.txt .
+
+# Instalar dependencias en un directorio aislado para copiarlas al runtime
+RUN pip install --no-cache-dir --prefix=/install -r requirements-train.txt
+
+
+# --------------- Stage 2: Runtime ---------------
+FROM python:3.11-slim AS runtime
+
+# Metadata del contenedor
+LABEL maintainer="MLOps Team" \
+      project="serverless-solar-mlops" \
+      description="Contenedor de entrenamiento Transformer Bi-LSTM para Vertex AI" \
+      phase="0.2"
+
+# Configuración de entorno para producción
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH="/app/src:${PYTHONPATH}" \
+    # --- Variables de Vertex AI (inyectadas automáticamente por el servicio) ---
+    AIP_MODEL_DIR="/gcs/model-output" \
+    AIP_CHECKPOINT_DIR="/gcs/checkpoints" \
+    AIP_TENSORBOARD_LOG_DIR="/gcs/tensorboard-logs" \
+    AIP_DATA_FORMAT="jsonl" \
+    # --- Logging ---
+    LOG_LEVEL="INFO" \
+    STRUCTURED_LOGGING="true"
+
+# Copiar SOLO las dependencias compiladas del builder (sin compiladores)
+COPY --from=builder /install /usr/local
+
+# Crear usuario no-root para seguridad (principio de mínimo privilegio)
+RUN groupadd --gid 1000 mlops && \
+    useradd --uid 1000 --gid mlops --shell /bin/bash --create-home mlops
+
+# Directorio de trabajo de la aplicación
+WORKDIR /app
+
+# Copiar código fuente
+COPY src/ ./src/
+
+# Crear directorios que Vertex AI espera (serán montados como volúmenes)
+RUN mkdir -p /gcs/model-output /gcs/checkpoints /gcs/tensorboard-logs && \
+    chown -R mlops:mlops /app /gcs
+
+# Cambiar a usuario no-root
+USER mlops
+
+# Health check básico: verificar que Python y torch están disponibles
+HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
+    CMD python -c "import torch; import pandas; print('OK')" || exit 1
+
+# Punto de entrada: Vertex AI invocará este comando
+ENTRYPOINT ["python", "-m", "src.entrypoints.train"]
