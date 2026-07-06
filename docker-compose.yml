@@ -1,0 +1,98 @@
+# ============================================================
+# docker-compose.yml — Emulación Local de Vertex AI
+# Serverless Solar MLOps | Sub-fase 0.2
+# ============================================================
+# Simula el entorno de Vertex AI Custom Training localmente:
+#   - Volúmenes que replican los mount points de GCS
+#   - Variables de entorno inyectadas por Vertex AI
+#   - Límites de recursos para simular restricciones de GPU
+# ============================================================
+
+services:
+  # --------------- Servicio de Entrenamiento ---------------
+  training:
+    build:
+      context: .
+      dockerfile: Dockerfile.training
+      target: runtime
+    container_name: solar-mlops-training
+    
+    # Variables de entorno (simulan la inyección de Vertex AI)
+    env_file:
+      - .env
+    
+    environment:
+      # --- Vertex AI Simulated Environment Variables ---
+      # En producción, Vertex AI inyecta estas automáticamente.
+      # Aquí las simulamos para desarrollo local.
+      - AIP_MODEL_DIR=/gcs/model-output
+      - AIP_CHECKPOINT_DIR=/gcs/checkpoints
+      - AIP_TENSORBOARD_LOG_DIR=/gcs/tensorboard-logs
+      - AIP_DATA_FORMAT=jsonl
+      
+      # --- Overrides para desarrollo local ---
+      - LOG_LEVEL=DEBUG
+      - STRUCTURED_LOGGING=true
+      - ENVIRONMENT=local
+    
+    # Volúmenes: simulan los mount points de GCS en Vertex AI
+    volumes:
+      # Código fuente montado para desarrollo iterativo (hot-reload)
+      - ./src:/app/src:ro
+      
+      # Simular directorios de GCS que Vertex AI monta automáticamente
+      - ./local_volumes/model-output:/gcs/model-output
+      - ./local_volumes/checkpoints:/gcs/checkpoints
+      - ./local_volumes/tensorboard-logs:/gcs/tensorboard-logs
+      
+      # Datos de entrada locales (simula lectura desde BigQuery)
+      - ./local_volumes/data:/gcs/data:ro
+    
+    # Límites de recursos (simular restricciones de Vertex AI)
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+        reservations:
+          memory: 4G
+    
+    # Reinicio: nunca reiniciar automáticamente (el entrenamiento es finito)
+    restart: "no"
+    
+    # Logging: formato JSON para simular Cloud Logging
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
+        tag: "solar-mlops-training"
+
+  # --------------- Servicio de Testing ---------------
+  test:
+    build:
+      context: .
+      dockerfile: Dockerfile.training
+      target: runtime
+    container_name: solar-mlops-test
+    
+    environment:
+      - ENVIRONMENT=test
+      - LOG_LEVEL=DEBUG
+      - STRUCTURED_LOGGING=false
+    
+    volumes:
+      - ./src:/app/src:ro
+      - ./tests:/app/tests:ro
+    
+    # Override del entrypoint para ejecutar tests
+    entrypoint: ["python", "-m", "pytest"]
+    command: ["tests/", "-v", "--tb=short", "--cov=src", "--cov-report=term-missing"]
+    
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+    
+    restart: "no"
+    profiles:
+      - testing

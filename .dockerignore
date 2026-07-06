@@ -1,0 +1,64 @@
+# ============================================================
+# .dockerignore — Optimización del Build Context
+# Serverless Solar MLOps | Sub-fase 0.2
+# ============================================================
+# Excluir archivos innecesarios del contexto de Docker
+# para acelerar el build y reducir el tamaño de la imagen.
+# ============================================================
+
+# Entorno virtual (se instala dentro del contenedor)
+venv/
+.venv/
+env/
+
+# Git
+.git/
+.gitignore
+
+# Documentación (no necesaria en la imagen de entrenamiento)
+docs/
+*.md
+!README.md
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Datos locales y volúmenes (se montan, no se copian)
+local_volumes/
+data/
+
+# Archivos de entorno (se inyectan como variables, no se copian)
+.env
+.env.*
+
+# Cache de Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Testing (no se incluye en la imagen de producción)
+tests/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Docker (evitar recursión)
+docker-compose.yml
+docker-compose.override.yml
+Dockerfile.*
+
+# Modelos y checkpoints
+*.pt
+*.pth
+*.onnx
+checkpoints/
+model_artifacts/
+
+# Terraform
+.terraform/
+*.tfstate
