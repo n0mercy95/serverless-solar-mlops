@@ -4,6 +4,7 @@
 # (Arquitectura Hexagonal / Patrón Adapter GoF).
 from adapters.adapter_config import BigQueryConfig, StorageConfig
 from adapters.data_adapters import BigQueryTimeSeriesAdapter
+from adapters.logging_adapter import CloudMetricsLoggerAdapter
 from adapters.model_adapters import VertexCheckpointAdapter, VertexModelRepositoryAdapter
 
 __all__ = [
@@ -12,4 +13,5 @@ __all__ = [
     "BigQueryTimeSeriesAdapter",
     "VertexModelRepositoryAdapter",
     "VertexCheckpointAdapter",
+    "CloudMetricsLoggerAdapter",
 ]
