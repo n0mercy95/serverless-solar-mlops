@@ -111,10 +111,35 @@ def validate(
 def main() -> None:
     """Punto de entrada principal para Vertex AI."""
     
-    # 1. Configuración de parámetros
     try:
-        model_config = ModelConfig()
-        training_config = TrainingConfig()
+        # Carga de configuraciones desde variables de entorno si están presentes
+        model_kwargs = {}
+        if "MODEL_D_MODEL" in os.environ:
+            model_kwargs["d_model"] = int(os.environ["MODEL_D_MODEL"])
+        if "MODEL_N_HEADS" in os.environ:
+            model_kwargs["n_heads"] = int(os.environ["MODEL_N_HEADS"])
+        if "MODEL_N_ENCODER_LAYERS" in os.environ:
+            model_kwargs["n_encoder_layers"] = int(os.environ["MODEL_N_ENCODER_LAYERS"])
+        if "MODEL_LSTM_HIDDEN_SIZE" in os.environ:
+            model_kwargs["lstm_hidden_size"] = int(os.environ["MODEL_LSTM_HIDDEN_SIZE"])
+        if "MODEL_DROPOUT" in os.environ:
+            model_kwargs["dropout"] = float(os.environ["MODEL_DROPOUT"])
+        if "TRAIN_SEQUENCE_LENGTH" in os.environ:
+            model_kwargs["sequence_length"] = int(os.environ["TRAIN_SEQUENCE_LENGTH"])
+        if "TRAIN_FORECAST_HORIZON" in os.environ:
+            model_kwargs["forecast_horizon"] = int(os.environ["TRAIN_FORECAST_HORIZON"])
+        
+        model_config = ModelConfig(**model_kwargs)
+        
+        training_kwargs = {}
+        if "TRAIN_EPOCHS" in os.environ:
+            training_kwargs["epochs"] = int(os.environ["TRAIN_EPOCHS"])
+        if "TRAIN_BATCH_SIZE" in os.environ:
+            training_kwargs["batch_size"] = int(os.environ["TRAIN_BATCH_SIZE"])
+        if "TRAIN_LEARNING_RATE" in os.environ:
+            training_kwargs["learning_rate"] = float(os.environ["TRAIN_LEARNING_RATE"])
+            
+        training_config = TrainingConfig(**training_kwargs)
         bq_config = BigQueryConfig()
         storage_config = StorageConfig()
         
