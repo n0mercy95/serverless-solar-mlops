@@ -132,6 +132,204 @@ def check_retraining_trigger(**context):
         raise AirflowFailException(f"Error estructural o de configuración irrecoverable: {struct_err}")
 
 
+# --- Evaluación Champion vs Challenger y Aliasing ---
+def evaluate_champion_challenger(**context):
+    """
+    Compara el modelo Challenger recién entrenado contra el Champion (stable) actual en Vertex AI.
+    Si el Challenger es superior (MAE/val_loss más bajo) o no existe un stable anterior,
+    lo promueve a 'stable' en el Vertex AI Model Registry y lo despliega en el Endpoint.
+    """
+    import os
+    import json
+    import logging
+    from urllib.parse import urlparse
+    from airflow.exceptions import AirflowException, AirflowFailException, AirflowSkipException
+
+    staging_bucket = os.environ.get("VERTEX_STAGING_BUCKET", "gs://tu-bucket-staging")
+    project_id = os.environ.get("GCP_PROJECT_ID", "tu-proyecto-gcp")
+    region = os.environ.get("GCP_REGION", "us-central1")
+    model_name = os.environ.get("VERTEX_MODEL_NAME", "solar_transformer_bilstm")
+    endpoint_name = os.environ.get("VERTEX_ENDPOINT_NAME", "solar_transformer_bilstm_endpoint")
+    serving_container = os.environ.get(
+        "VERTEX_SERVING_CONTAINER_IMAGE_URI",
+        "us-docker.pkg.dev/vertex-ai/prediction/pytorch-cpu.1-13:latest"
+    )
+
+    # 1. Leer las métricas del Challenger desde metadata.json
+    metadata_uri = f"{staging_bucket}/model-output/metadata.json"
+    challenger_val_loss = None
+    
+    try:
+        if metadata_uri.startswith("gs://"):
+            from airflow.providers.google.cloud.hooks.gcs import GCSHook
+            hook = GCSHook()
+            parsed = urlparse(metadata_uri)
+            bucket_name = parsed.netloc
+            object_name = parsed.path.lstrip('/')
+            metadata_content = hook.download_as_byte_string(bucket_name, object_name)
+            challenger_metadata = json.loads(metadata_content.decode('utf-8'))
+        else:
+            with open(metadata_uri, "r", encoding="utf-8") as f:
+                challenger_metadata = json.load(f)
+        
+        challenger_val_loss = float(challenger_metadata.get("val_loss", 999.0))
+        logging.info(f"Métricas del Challenger cargadas con éxito. MAE (val_loss): {challenger_val_loss:.6f}")
+    except Exception as e:
+        logging.error(f"Error cargando metadatos del Challenger: {e}")
+        raise AirflowFailException(f"No se pudieron leer las métricas del Challenger: {e}")
+
+    # 2. Lógica para tests / simulación
+    force_result = os.environ.get("FORCE_EVALUATION_RESULT", "").lower()
+    simulate_champion_mae = os.environ.get("SIMULATE_CHAMPION_MAE")
+    
+    if force_result == "error":
+        raise AirflowException("Error de conexión simulado con Vertex AI.")
+    
+    if force_result in ["promote", "reject"] or simulate_champion_mae is not None:
+        champion_val_loss = float(simulate_champion_mae) if simulate_champion_mae else 0.05
+        logging.info(f"Simulando Champion con MAE: {champion_val_loss:.6f}")
+        
+        if force_result == "promote" or (force_result != "reject" and challenger_val_loss < champion_val_loss):
+            logging.info("Resultado de simulación: Challenger supera al Champion. Promocionando a stable...")
+            return "Promoted (Simulated)"
+        else:
+            logging.info("Resultado de simulación: Champion sigue siendo mejor. Omitiendo promoción.")
+            raise AirflowSkipException("El modelo candidato no superó al modelo estable en producción.")
+
+    # 3. Integración real con Vertex AI SDK
+    try:
+        from google.cloud import aiplatform
+        from google.cloud import aiplatform_v1
+        
+        aiplatform.init(project=project_id, location=region)
+        
+        # Buscar si el modelo ya está en el registro
+        model_resource_name = None
+        models = aiplatform.Model.list(filter=f'display_name="{model_name}"', project=project_id, location=region)
+        if models:
+            model_resource_name = models[0].resource_name
+            logging.info(f"Modelo existente encontrado en el registro: {model_resource_name}")
+            
+            # Obtener el Champion actual (stable)
+            try:
+                champion_model = aiplatform.Model(
+                    model_name=f"{model_resource_name}@stable",
+                    project=project_id,
+                    location=region
+                )
+                if champion_model.version_description:
+                    champion_metadata = json.loads(champion_model.version_description)
+                    champion_val_loss = float(champion_metadata.get("val_loss", 999.0))
+                else:
+                    champion_val_loss = 999.0
+                logging.info(f"Champion actual ('stable') cargado con éxito. MAE: {champion_val_loss:.6f}")
+            except Exception as e:
+                logging.warning(f"No se pudo obtener el Champion actual ('stable') o carece de metadatos: {e}. Asumiendo pérdida infinita.")
+                champion_val_loss = float("inf")
+        else:
+            logging.info("No se encontró ningún modelo en el registro. Este será el Champion inicial.")
+            champion_val_loss = float("inf")
+
+        # Subir el Challenger como una nueva versión (con alias 'candidate')
+        artifact_uri = f"{staging_bucket}/model-output"
+        logging.info(f"Registrando Challenger en Vertex AI Model Registry desde {artifact_uri}...")
+        
+        version_description_json = json.dumps({"val_loss": challenger_val_loss})
+        
+        if model_resource_name:
+            challenger_model = aiplatform.Model.upload(
+                display_name=model_name,
+                artifact_uri=artifact_uri,
+                serving_container_image_uri=serving_container,
+                parent_model=model_resource_name,
+                version_aliases=["candidate"],
+                version_description=version_description_json,
+                project=project_id,
+                location=region,
+            )
+        else:
+            challenger_model = aiplatform.Model.upload(
+                display_name=model_name,
+                artifact_uri=artifact_uri,
+                serving_container_image_uri=serving_container,
+                version_aliases=["candidate"],
+                version_description=version_description_json,
+                project=project_id,
+                location=region,
+            )
+            model_resource_name = challenger_model.resource_name
+            
+        logging.info(f"Challenger subido correctamente. Versión ID: {challenger_model.version_id}, Resource Name: {challenger_model.resource_name}")
+
+        # Comparar y Promocionar
+        if challenger_val_loss < champion_val_loss:
+            logging.info(f"¡Challenger ({challenger_val_loss:.6f}) es mejor que Champion ({champion_val_loss:.6f})! Promocionando a 'stable'...")
+            
+            client = aiplatform_v1.ModelServiceClient(
+                client_options={"api_endpoint": f"{region}-aiplatform.googleapis.com"}
+            )
+            
+            target_version_resource = f"{model_resource_name}@{challenger_model.version_id}"
+            logging.info(f"Asociando alias 'stable' a la versión: {target_version_resource}")
+            client.merge_version_aliases(
+                name=target_version_resource,
+                version_aliases=["stable"]
+            )
+            
+            # Desplegar al Endpoint de Vertex AI
+            logging.info(f"Orquestando despliegue de la versión {challenger_model.version_id} al Endpoint...")
+            
+            endpoints = aiplatform.Endpoint.list(
+                filter=f'display_name="{endpoint_name}"',
+                project=project_id,
+                location=region
+            )
+            if endpoints:
+                endpoint = endpoints[0]
+                logging.info(f"Endpoint existente encontrado: {endpoint.resource_name}")
+            else:
+                logging.info(f"Creando nuevo Endpoint: {endpoint_name}...")
+                endpoint = aiplatform.Endpoint.create(
+                    display_name=endpoint_name,
+                    project=project_id,
+                    location=region
+                )
+                logging.info(f"Endpoint creado: {endpoint.resource_name}")
+
+            model_to_deploy = aiplatform.Model(f"{model_resource_name}@stable")
+            
+            logging.info("Iniciando deploy en el Endpoint...")
+            deployed_model = endpoint.deploy(
+                model=model_to_deploy,
+                deployed_model_display_name=f"deployed-{model_name}",
+                traffic_percentage=100,
+                machine_type="n1-standard-2",
+                min_replica_count=1,
+                max_replica_count=1,
+            )
+            logging.info("Modelo desplegado con éxito en el Endpoint.")
+
+            logging.info("Undeploying old models from endpoint to save resources...")
+            for dm in endpoint.deployed_models:
+                if dm.id != deployed_model.id:
+                    logging.info(f"Undeploying model instance {dm.id} (model version {dm.model_id})...")
+                    try:
+                        endpoint.undeploy(deployed_model_id=dm.id)
+                    except Exception as e:
+                        logging.warning(f"No se pudo undeployar el modelo {dm.id}: {e}")
+                        
+            return "Promoted and Deployed"
+        else:
+            logging.info(f"Challenger ({challenger_val_loss:.6f}) no superó al Champion ({champion_val_loss:.6f}). No se actualiza 'stable'.")
+            raise AirflowSkipException("El modelo candidato no superó al modelo estable en producción.")
+            
+    except AirflowSkipException:
+        raise
+    except Exception as e:
+        logging.error(f"Fallo en la evaluación/promoción de Vertex AI: {e}", exc_info=True)
+        raise AirflowException(f"Error en evaluación/promoción de Vertex AI: {e}")
+
+
 # --- Parámetros de Configuración del DAG ---
 PROJECT_ID = os.environ.get("GCP_PROJECT_ID", "tu-proyecto-gcp")
 REGION = os.environ.get("GCP_REGION", "us-central1")
@@ -234,5 +432,11 @@ with DAG(
         on_success_callback=lambda ctx: notify_slack(ctx, "SUCCESS"),
     )
 
+    # 3. Tarea de evaluación Champion vs Challenger y despliegue/aliasing
+    evaluate_model = PythonOperator(
+        task_id="evaluate_model",
+        python_callable=evaluate_champion_challenger,
+    )
+
     # Flujo de dependencias
-    check_trigger >> train_transformer_bilstm
+    check_trigger >> train_transformer_bilstm >> evaluate_model

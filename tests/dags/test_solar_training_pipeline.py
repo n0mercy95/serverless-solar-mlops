@@ -36,19 +36,24 @@ def test_dag_exists(dagbag: DagBag) -> None:
     assert dag_id in dagbag.dags
     
     dag = dagbag.dags[dag_id]
-    assert len(dag.tasks) == 2
+    assert len(dag.tasks) == 3
     
     # Comprobar tareas esperadas
     task_ids = [t.task_id for t in dag.tasks]
     assert "check_retraining_trigger" in task_ids
     assert "train_transformer_bilstm" in task_ids
+    assert "evaluate_model" in task_ids
     
-    # Comprobar dependencias: check_retraining_trigger >> train_transformer_bilstm
+    # Comprobar dependencias: check_retraining_trigger >> train_transformer_bilstm >> evaluate_model
     check_task = dag.get_task("check_retraining_trigger")
     train_task = dag.get_task("train_transformer_bilstm")
+    evaluate_task = dag.get_task("evaluate_model")
     
     assert train_task in check_task.downstream_list
     assert check_task in train_task.upstream_list
+    
+    assert evaluate_task in train_task.downstream_list
+    assert train_task in evaluate_task.upstream_list
 
 
 def test_operator_configurations(dagbag: DagBag) -> None:
@@ -201,3 +206,147 @@ def test_notify_slack_tolerant_to_exceptions(mock_requests, mock_base_hook) -> N
     notify_slack(context, "FAILED")
     
     mock_requests.post.assert_called_once()
+
+
+# --- Tests de la Lógica de Evaluación (evaluate_champion_challenger) ---
+
+@patch("solar_training_pipeline.open", create=True)
+def test_evaluate_champion_challenger_force_promote(mock_open) -> None:
+    """Verifica que si forzamos 'promote', el modelo sea simulado como promovido."""
+    from solar_training_pipeline import evaluate_champion_challenger
+    
+    # Mockear lectura del archivo metadata.json local
+    mock_open.return_value.__enter__.return_value.read.return_value = '{"val_loss": 0.04}'
+    
+    with patch.dict(os.environ, {
+        "VERTEX_STAGING_BUCKET": "/tmp/mock-bucket",
+        "FORCE_EVALUATION_RESULT": "promote",
+        "SIMULATE_CHAMPION_MAE": "0.05"
+    }):
+        res = evaluate_champion_challenger()
+        assert res == "Promoted (Simulated)"
+
+
+@patch("solar_training_pipeline.open", create=True)
+def test_evaluate_champion_challenger_force_reject(mock_open) -> None:
+    """Verifica que si el Challenger no supera al Champion, lance AirflowSkipException."""
+    from solar_training_pipeline import evaluate_champion_challenger
+    
+    mock_open.return_value.__enter__.return_value.read.return_value = '{"val_loss": 0.06}'
+    
+    with patch.dict(os.environ, {
+        "VERTEX_STAGING_BUCKET": "/tmp/mock-bucket",
+        "FORCE_EVALUATION_RESULT": "reject",
+        "SIMULATE_CHAMPION_MAE": "0.05"
+    }):
+        with pytest.raises(AirflowSkipException, match="El modelo candidato no superó al modelo estable"):
+            evaluate_champion_challenger()
+
+
+@patch("solar_training_pipeline.open", create=True)
+def test_evaluate_champion_challenger_force_error(mock_open) -> None:
+    """Verifica que si la evaluación fuerza error, lance AirflowException."""
+    from solar_training_pipeline import evaluate_champion_challenger
+    
+    mock_open.return_value.__enter__.return_value.read.return_value = '{"val_loss": 0.04}'
+    
+    with patch.dict(os.environ, {
+        "VERTEX_STAGING_BUCKET": "/tmp/mock-bucket",
+        "FORCE_EVALUATION_RESULT": "error"
+    }):
+        with pytest.raises(AirflowException, match="Error de conexión simulado con Vertex AI"):
+            evaluate_champion_challenger()
+
+
+@patch("solar_training_pipeline.open", create=True)
+@patch("google.cloud.aiplatform.init")
+@patch("google.cloud.aiplatform.Model.list")
+@patch("google.cloud.aiplatform.Model")
+@patch("google.cloud.aiplatform_v1.ModelServiceClient")
+@patch("google.cloud.aiplatform.Endpoint.list")
+@patch("google.cloud.aiplatform.Endpoint")
+def test_evaluate_champion_challenger_real_sdk_flow(
+    mock_endpoint_class,
+    mock_endpoint_list,
+    mock_model_service_client,
+    mock_model_class,
+    mock_model_list,
+    mock_init,
+    mock_open
+) -> None:
+    """Testea el flujo completo usando la API de Vertex AI mockeada (Challenger mejor que Champion)."""
+    from solar_training_pipeline import evaluate_champion_challenger
+    
+    # 1. Mockear archivo metadata.json del Challenger
+    mock_open.return_value.__enter__.return_value.read.return_value = '{"val_loss": 0.035}'
+    
+    # 2. Configurar mock del Modelo Existente
+    mock_existing_model = MagicMock()
+    mock_existing_model.resource_name = "projects/mock-p/locations/mock-l/models/mock-m"
+    mock_model_list.return_value = [mock_existing_model]
+    
+    # 3. Configurar mock del Champion (stable)
+    mock_champion = MagicMock()
+    mock_champion.version_description = '{"val_loss": 0.050}'
+    mock_model_class.return_value = mock_champion
+    
+    # 4. Configurar mock del Challenger recién subido
+    mock_challenger = MagicMock()
+    mock_challenger.version_id = "2"
+    mock_challenger.resource_name = "projects/mock-p/locations/mock-l/models/mock-m@2"
+    mock_model_class.upload.return_value = mock_challenger
+    
+    # 5. Configurar mock del Endpoint
+    mock_endpoint = MagicMock()
+    mock_endpoint.resource_name = "projects/mock-p/locations/mock-l/endpoints/mock-ep"
+    mock_endpoint_list.return_value = [mock_endpoint]
+    
+    # Mock deploy
+    mock_deployed_model = MagicMock()
+    mock_deployed_model.id = "deployed-instance-123"
+    mock_endpoint.deploy.return_value = mock_deployed_model
+    
+    # Mock deployed models (uno viejo para simular undeploy)
+    mock_old_deployed = MagicMock()
+    mock_old_deployed.id = "deployed-instance-old"
+    mock_old_deployed.model_id = "model-old"
+    mock_endpoint.deployed_models = [mock_old_deployed, mock_deployed_model]
+    
+    # 6. Ejecutar función sin forzar resultados de simulación
+    with patch.dict(os.environ, {
+        "VERTEX_STAGING_BUCKET": "/tmp/mock-bucket",
+        "GCP_PROJECT_ID": "mock-project",
+        "GCP_REGION": "us-central1",
+        "VERTEX_MODEL_NAME": "solar-transformer",
+        "VERTEX_ENDPOINT_NAME": "solar-endpoint"
+    }, clear=False):
+        res = evaluate_champion_challenger()
+        
+        # Validar resultado de promoción
+        assert res == "Promoted and Deployed"
+        
+        # Verificar inicialización de Vertex AI
+        mock_init.assert_called_once_with(project="mock-project", location="us-central1")
+        
+        # Verificar subida del Challenger con parent_model seteado
+        mock_model_class.upload.assert_called_once()
+        _, kwargs = mock_model_class.upload.call_args
+        assert kwargs["parent_model"] == "projects/mock-p/locations/mock-l/models/mock-m"
+        assert "candidate" in kwargs["version_aliases"]
+        assert "0.035" in kwargs["version_description"]
+        
+        # Verificar aliasing a stable
+        mock_model_service_client.assert_called_once()
+        mock_client_instance = mock_model_service_client.return_value
+        mock_client_instance.merge_version_aliases.assert_called_once_with(
+            name="projects/mock-p/locations/mock-l/models/mock-m@2",
+            version_aliases=["stable"]
+        )
+        
+        # Verificar despliegue del modelo con alias stable
+        mock_model_class.assert_any_call("projects/mock-p/locations/mock-l/models/mock-m@stable")
+        mock_endpoint.deploy.assert_called_once()
+        
+        # Verificar undeploy del modelo antiguo
+        mock_endpoint.undeploy.assert_called_once_with(deployed_model_id="deployed-instance-old")
+
